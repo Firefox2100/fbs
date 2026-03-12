@@ -118,9 +118,6 @@ static uint16_t bt_serial_event_callback(SerialServiceEvent event, void* context
         }
         printf("\r\n");
         fbs_set_display_text(app, data_text);
-        if(app->bt_serial_profile) {
-            ble_profile_serial_notify_buffer_is_empty(app->bt_serial_profile);
-        }
     } else if(event.event == SerialServiceEventTypeDataSent) {
         FURI_LOG_D(TAG, "SerialServiceEventTypeDataSent");
         FURI_LOG_D(TAG, "Size: %u", event.data.size);
@@ -144,8 +141,6 @@ int32_t fbs_app(void* p) {
     app->bt_serial_profile = bt_profile_start(app->bt, ble_profile_serial, NULL);
     if(app->bt_serial_profile) {
         bt_set_status_changed_callback(app->bt, fbs_bt_status_changed_callback, app);
-        /* Mark built-in RPC as inactive so this app owns the serial channel. */
-        ble_profile_serial_set_rpc_active(app->bt_serial_profile, false);
         ble_profile_serial_set_event_callback(
             app->bt_serial_profile, BT_SERIAL_BUFFER_SIZE, bt_serial_event_callback, app);
         furi_hal_bt_start_advertising();
@@ -170,7 +165,6 @@ int32_t fbs_app(void* p) {
     if(app->bt_serial_profile) {
         furi_timer_stop(app->tx_timer);
         ble_profile_serial_set_event_callback(app->bt_serial_profile, 0, NULL, NULL);
-        ble_profile_serial_set_rpc_active(app->bt_serial_profile, false);
         bt_set_status_changed_callback(app->bt, NULL, NULL);
         bt_profile_restore_default(app->bt);
     }

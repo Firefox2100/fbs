@@ -3,9 +3,10 @@
 #include <furi.h>
 #include <furi_hal_bt.h>
 #include <bt/bt_service/bt.h>
-#include <profiles/serial_profile.h>
 #include <gui/gui.h>
 #include <gui/view.h>
+
+#include "ble_serial.h"
 
 #define TAG "FlipperBTSerial"
 #define FBS_DISPLAY_TEXT_SIZE 64

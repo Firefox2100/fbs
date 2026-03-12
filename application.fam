@@ -11,7 +11,7 @@ App(
     ],
     fap_version="0.1",
     fap_icon="fbs.png",
-    fap_description="Flipper Zero BT Serial App Example",
-    fap_author="maybe-hello-world",
-    fap_weburl="https://github.com/maybe-hello-world/fbs",
+    fap_description="Flipper Zero BT Serial App Example, forked and modified from maybe-hello-world/fbs",
+    fap_author="Firefox2100",
+    fap_weburl="https://github.com/Firefox2100/fbs",
 )
