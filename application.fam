@@ -4,8 +4,14 @@ App(
     apptype=FlipperAppType.EXTERNAL,
     entry_point="fbs_app",
     stack_size=1 * 1024,
+    fap_category="Examples",
     requires=[
         "bt",
         "gui",
     ],
+    fap_version="0.1",
+    fap_icon="fbs.png",
+    fap_description="Flipper Zero BT Serial App Example",
+    fap_author="maybe-hello-world",
+    fap_weburl="https://github.com/maybe-hello-world/fbs",
 )
