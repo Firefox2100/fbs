@@ -1,6 +1,6 @@
 #include "fbs.h"
 
-const uint16_t BT_SERIAL_BUFFER_SIZE = 128;
+static const uint8_t FBS_ECHO_PADDING[] = {0x0F, 0xF0};
 
 static void fbs_set_display_text(FBS* app, const char* text) {
     furi_check(furi_mutex_acquire(app->app_mutex, FuriWaitForever) == FuriStatusOk);
@@ -19,7 +19,11 @@ void draw_callback(Canvas* canvas, void* ctx) {
 
 void input_callback(InputEvent* input, void* ctx) {
     FBS* app = ctx;
-    furi_message_queue_put(app->event_queue, input, FuriWaitForever);
+    FbsEvent event = {
+        .type = FbsEventTypeInput,
+        .input = *input,
+    };
+    furi_message_queue_put(app->event_queue, &event, FuriWaitForever);
 }
 
 static void fbs_bt_status_changed_callback(BtStatus status, void* context) {
@@ -47,20 +51,58 @@ static void fbs_bt_status_changed_callback(BtStatus status, void* context) {
     }
 }
 
-static void fbs_tx_timer_callback(void* context) {
-    FBS* app = context;
+static bool fbs_send_echo(FBS* app, const uint8_t* data, size_t size) {
+    furi_check(app);
+    furi_check(data);
 
-    if(!app->bt_serial_profile || !app->bt_connected) return;
+    if(!app->bt_serial_profile || !app->bt_connected) {
+        return false;
+    }
 
-    uint8_t value = app->tx_counter++;
-    bool sent = ble_profile_serial_tx(app->bt_serial_profile, &value, 1);
-    FURI_LOG_D(TAG, "TX heartbeat %02X, sent=%d", value, sent);
+    if(size > (BLE_PROFILE_SERIAL_PACKET_SIZE_MAX - sizeof(FBS_ECHO_PADDING) * 2U)) {
+        FURI_LOG_W(TAG, "RX packet too large to echo: %u", size);
+        fbs_set_display_text(app, "RX too large to echo");
+        return false;
+    }
+
+    size_t offset = 0;
+
+    memcpy(app->echo_buffer + offset, FBS_ECHO_PADDING, sizeof(FBS_ECHO_PADDING));
+    offset += sizeof(FBS_ECHO_PADDING);
+    memcpy(app->echo_buffer + offset, data, size);
+    offset += size;
+    memcpy(app->echo_buffer + offset, FBS_ECHO_PADDING, sizeof(FBS_ECHO_PADDING));
+    offset += sizeof(FBS_ECHO_PADDING);
+
+    bool sent = ble_profile_serial_tx(app->bt_serial_profile, app->echo_buffer, offset);
+    FURI_LOG_D(TAG, "Echoed %u bytes, sent=%d", offset, sent);
+    return sent;
+}
+
+static void fbs_handle_rx(FBS* app, const uint8_t* data, size_t size) {
+    char data_text[FBS_DISPLAY_TEXT_SIZE];
+    size_t offset = snprintf(data_text, sizeof(data_text), "RX:");
+
+    FURI_LOG_D(TAG, "Handling RX packet of %u bytes", size);
+    for(size_t i = 0; i < size; i++) {
+        printf("%X ", data[i]);
+        if(offset < sizeof(data_text)) {
+            offset += snprintf(data_text + offset, sizeof(data_text) - offset, " %02X", data[i]);
+        }
+    }
+    printf("\r\n");
+
+    fbs_set_display_text(app, data_text);
+    fbs_send_echo(app, data, size);
+    if(app->bt_serial_profile) {
+        ble_profile_serial_notify_buffer_is_empty(app->bt_serial_profile);
+    }
 }
 
 FBS* fbs_alloc() {
     FBS* app = malloc(sizeof(FBS));
     app->app_mutex = furi_mutex_alloc(FuriMutexTypeNormal);
-    app->event_queue = furi_message_queue_alloc(8, sizeof(InputEvent));
+    app->event_queue = furi_message_queue_alloc(8, sizeof(FbsEvent));
 
     app->gui = furi_record_open(RECORD_GUI);
     app->view_port = view_port_alloc();
@@ -71,8 +113,6 @@ FBS* fbs_alloc() {
     app->bt_connected = false;
     app->bt = furi_record_open(RECORD_BT);
     app->bt_serial_profile = NULL;
-    app->tx_timer = furi_timer_alloc(fbs_tx_timer_callback, FuriTimerTypePeriodic, app);
-    app->tx_counter = 0;
     snprintf(app->display_text, FBS_DISPLAY_TEXT_SIZE, "Waiting for BLE data");
     return app;
 }
@@ -84,7 +124,6 @@ void fbs_free(FBS* app) {
     app->gui = NULL;
     view_port_free(app->view_port);
 
-    furi_timer_free(app->tx_timer);
     furi_mutex_free(app->app_mutex);
     furi_message_queue_free(app->event_queue);
 
@@ -100,32 +139,22 @@ static uint16_t bt_serial_event_callback(SerialServiceEvent event, void* context
     uint16_t ret = BT_SERIAL_BUFFER_SIZE;
 
     if(event.event == SerialServiceEventTypeDataReceived) {
-        char data_text[FBS_DISPLAY_TEXT_SIZE];
-        size_t offset = snprintf(data_text, sizeof(data_text), "RX:");
-
         FURI_LOG_D(TAG, "SerialServiceEventTypeDataReceived");
         FURI_LOG_D(TAG, "Size: %u", event.data.size);
-        FURI_LOG_D(TAG, "Data: ");
-        for(size_t i = 0; i < event.data.size; i++) {
-            printf("%X ", event.data.buffer[i]);
-            if(offset < sizeof(data_text)) {
-                offset += snprintf(
-                    data_text + offset,
-                    sizeof(data_text) - offset,
-                    " %02X",
-                    event.data.buffer[i]);
+        if(event.data.size <= FBS_RX_BUFFER_SIZE) {
+            FbsEvent queue_event = {
+                .type = FbsEventTypeBleRx,
+            };
+            queue_event.ble_rx.size = event.data.size;
+            memcpy(queue_event.ble_rx.data, event.data.buffer, event.data.size);
+            if(furi_message_queue_put(app->event_queue, &queue_event, 0) != FuriStatusOk) {
+                FURI_LOG_W(TAG, "Dropping RX packet: app queue full");
             }
+        } else {
+            FURI_LOG_W(TAG, "Dropping RX packet: %u exceeds queue buffer", event.data.size);
         }
-        printf("\r\n");
-        fbs_set_display_text(app, data_text);
     } else if(event.event == SerialServiceEventTypeDataSent) {
         FURI_LOG_D(TAG, "SerialServiceEventTypeDataSent");
-        FURI_LOG_D(TAG, "Size: %u", event.data.size);
-        FURI_LOG_D(TAG, "Data: ");
-        for(size_t i = 0; i < event.data.size; i++) {
-            printf("%X ", event.data.buffer[i]);
-        }
-        printf("\r\n");
     } else if(event.event == SerialServiceEventTypesBleResetRequest) {
         FURI_LOG_D(TAG, "SerialServiceEventTypesBleResetRequest");
         fbs_set_display_text(app, "BLE reset requested");
@@ -144,26 +173,30 @@ int32_t fbs_app(void* p) {
         ble_profile_serial_set_event_callback(
             app->bt_serial_profile, BT_SERIAL_BUFFER_SIZE, bt_serial_event_callback, app);
         furi_hal_bt_start_advertising();
-        furi_timer_start(app->tx_timer, furi_ms_to_ticks(1000));
         fbs_set_display_text(app, "Advertising BLE serial");
     } else {
         FURI_LOG_E(TAG, "Failed to start BLE serial profile");
         fbs_set_display_text(app, "Serial profile failed");
     }
     
-    InputEvent event;
+    FbsEvent event;
     for(bool processing = true; processing;) {
         int status = furi_message_queue_get(app->event_queue, &event, 100);
-        furi_check(furi_mutex_acquire(app->app_mutex, FuriWaitForever) == FuriStatusOk);
-        if(status == FuriStatusOk && event.type == InputTypePress && event.key == InputKeyBack) {
-            processing = false;
+        if(status == FuriStatusOk) {
+            if(event.type == FbsEventTypeInput) {
+                furi_check(furi_mutex_acquire(app->app_mutex, FuriWaitForever) == FuriStatusOk);
+                if(event.input.type == InputTypePress && event.input.key == InputKeyBack) {
+                    processing = false;
+                }
+                furi_mutex_release(app->app_mutex);
+            } else if(event.type == FbsEventTypeBleRx) {
+                fbs_handle_rx(app, event.ble_rx.data, event.ble_rx.size);
+            }
         }
-        furi_mutex_release(app->app_mutex);
         view_port_update(app->view_port);
     }
 
     if(app->bt_serial_profile) {
-        furi_timer_stop(app->tx_timer);
         ble_profile_serial_set_event_callback(app->bt_serial_profile, 0, NULL, NULL);
         bt_set_status_changed_callback(app->bt, NULL, NULL);
         bt_profile_restore_default(app->bt);

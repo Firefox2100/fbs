@@ -117,3 +117,11 @@ bool ble_profile_serial_tx(FuriHalBleProfileBase* profile, uint8_t* data, uint16
     BleProfileSerial* serial_profile = (BleProfileSerial*)profile;
     return ble_svc_serial_update_tx(serial_profile->serial_svc, data, size);
 }
+
+void ble_profile_serial_notify_buffer_is_empty(FuriHalBleProfileBase* profile) {
+    furi_check(profile);
+    furi_check(profile->config == ble_profile_serial);
+
+    BleProfileSerial* serial_profile = (BleProfileSerial*)profile;
+    ble_svc_serial_notify_buffer_is_empty(serial_profile->serial_svc);
+}

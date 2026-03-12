@@ -26,6 +26,8 @@ extern const FuriHalBleProfileTemplate* const ble_profile_serial;
 
 bool ble_profile_serial_tx(FuriHalBleProfileBase* profile, uint8_t* data, uint16_t size);
 
+void ble_profile_serial_notify_buffer_is_empty(FuriHalBleProfileBase* profile);
+
 void ble_profile_serial_set_event_callback(
     FuriHalBleProfileBase* profile,
     uint16_t buff_size,
